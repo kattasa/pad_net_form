@@ -6,3 +6,4 @@
 5. `OLP_networks_desc.csv` contains meta data and real world networks evaluated
 6. `sfanalysis_categorize_degree8000.csv` contains the results of the likelihood ratio tests
 7. `pad_degree_dist_analysis.ipynb` contains the code to analyze simulated PAD degree distributions using LRT
+8. `./SFAnalysis` contains code for `pad_degree_dist_analysis.ipynb`
