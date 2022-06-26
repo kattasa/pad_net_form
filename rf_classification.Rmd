@@ -1,0 +1,504 @@
+---
+title: "Classifying Generative Network Algorithms"
+output: html_notebook
+---
+
+```{r}
+rm(list = ls())
+source('generative_algorithms.R')
+source('network_characteristic_calculations.R')
+
+library(data.table)
+library(gridExtra)
+library(emdist)
+library(randomForest)
+library(reticulate)
+library(parallel)
+```
+
+<!-- ```{python gathering real world network data, eval=FALSE, include=FALSE} -->
+
+<!-- # DATA SOURCE: https://github.com/Aghasemian/OptimalLinkPrediction -->
+
+<!-- #   Amir Ghasemian, Homa Hosseinmardi, Aram Galstyan, Edoardo M. Airoldi and Aaron Clauset "Stacking Models for Nearly Optimal Link Prediction in Complex Networks", Proc. Natl. Acad. Sci. USA (2020). [PNAS version] -->
+
+<!-- # import pickle -->
+
+<!-- # import pandas as pd -->
+
+<!-- # import matplotlib.pyplot as plt -->
+
+<!-- # # load the data  -->
+
+<!-- # infile = open('./rw_nets/OLP_updated.pickle','rb')   -->
+
+<!-- # df = pickle.load(infile) -->
+
+<!-- #  -->
+
+<!-- # # include only networks with 100-2000 nodes -->
+
+<!-- # df_smaller = df[df.number_nodes.isin(range(100, 2000))] -->
+
+<!-- # # write all the edgelists  -->
+
+<!-- # for i in range(0, df_smaller.shape[0]): -->
+
+<!-- #   pd.DataFrame(df_smaller['edges_id'].iloc[i], columns = ['From', 'To']).\ -->
+
+<!-- #   to_csv('./olp_networks/' + df_smaller['network_name'].iloc[i] + '.csv', index = False) -->
+
+<!-- # df_smaller.to_csv('OLP_networks_desc.csv', index = False) -->
+
+<!-- # quit -->
+
+<!-- ``` -->
+
+```{r read pana data, message=FALSE, warning=FALSE, include=FALSE}
+# read in data files
+pan_graphs_over_time <- fread('simulation_data/pan_graphs_iter_2000_30_start0_end0.99_by0.01.csv') %>%
+  filter(time >= 100)
+# %>%
+#   filter(distribution == 'degree_distribution') %>%
+#   dplyr::select(-distribution)
+# pan_graphs_over_time %>%
+#   group_by(prob_a) %>%
+#   filter(is.na(max_lcc)) %>%
+#   select(-contains('node_')) %>%
+#   count()
+# pan_graphs_over_time %>%
+#   # head(4000) %>%
+#   # select(time, iteration, prob_a) %>%
+#   # unique() %>%
+#   filter(time >= 100) %>%
+#   count(time, prob_a)
+#   full_join(expand.grid(prob_a = seq(0, 1, 0.01),
+#                         time = seq(100, 2000, 100),
+#                         iteration = seq(1, 20, 1))) %>%
+# 
+# pan_power_law_fit <- lapply(unique(pan_graphs_over_time %>% pull(prob_a)), function(x)
+# c(x, pan_graphs_over_time %>%
+#   filter(distribution == 'btw_distribution') %>%
+#   filter(time == 2000) %>%
+#   filter(prob_a == x) %>%
+#   select(contains('node_'), 'prob_a') %>%
+#   pivot_longer(cols = -prob_a) %>%
+#   pull(value) %>%
+#   fit_power_law()) %>%
+#   as.data.frame()) %>%
+#   rbindlist()
+```
+
+```{r read small world data}
+smallworld_results_time <- fread('./simulation_data/smallworld_iter_2000_30_start0_end1_by0.01.csv')
+
+```
+
+```{r read holme kim data}
+holme_kim_results_time <- fread('./simulation_data/long_holme_kim_iter_2000_30_start1_end20_by1.csv') %>% 
+  select(-c(node_seq, degree_distribution, btw_distribution)) %>%
+  distinct()
+```
+
+
+```{r read preferential attachment data}
+pref_attach_results_time <- fread('./simulation_data/long_pref_attach_iter_2000_30_start1_end20_by1b.csv') %>%
+  select(-node_seq, -degree_distribution) %>%
+  distinct()
+# pref_attach_results_time %>%
+#   # filter(time == 2000) %>%
+#   select('iteration', 'time', contains('btw'))
+```
+
+```{r read bidirectional preferential attachment data}
+bpa_results_time <- fread('./simulation_data/bpa_iter_2000_30_start2_end8_by0.5.csv')
+
+# bpa_results_time %>% select(-contains('node_')) %>% View()
+```
+
+```{r}
+# dd_results_time <- fread('./simulation_data/dd_)
+dd_results_time <- lapply(list.files(path = './simulation_data/', pattern = 'dd_graphs_iter_2000_30'),
+       function(x) fread(paste0('./simulation_data/', x))) %>%
+  rbindlist() %>%
+  filter(time >= 100)
+
+# dd_results_time %>%
+#   distinct() %>%
+#   filter(time >= 100) %>%
+#   group_by(across()) %>%
+#   count() %>%
+#   filter(n != 1)
+#   as_tibble() %>%
+#   group_by(prob_a, time, iteration) %>%
+#   # mutate(x = seq(n())) %>%
+#   # filter(x == 1) %>%
+#   filter(time >= 100) %>%
+#   mutate(n = n()) %>%
+#   filter(n != 1)
+# 
+# dd_results_time %>%
+#   full_join(expand.grid(prob_a = seq(0, 1, 0.01),
+#                         iteration = seq(1, 30),
+#                         time = seq(100, 2000, 100))) %>%
+#   filter(is.na(diameter))
+```
+
+```{r}
+# k2_results_time <- fread('./simulation_data/k2_iter_2000_30_start1_end20_by1.csv') %>% 
+#   select(-node_seq, -degree_distribution) %>% 
+#   unique()
+```
+
+# Classifying Generative Network Algorithms
+
+```{r random forest dataset preparation}
+set.seed(999)
+rf_pana_df <- pan_graphs_over_time %>%
+  select(-contains('node_'), 
+         # -prob_a, 
+         -iteration) %>%
+  rename(n_nodes = time) %>%
+  # mutate(min_btw = ifelse(is.infinite(min_btw), 0, min_btw),
+  #        max_btw = ifelse(is.infinite(max_btw), 0, max_btw),
+  #        avg_btw = replace_na(avg_btw, 0),
+  #        std_btw = replace_na(0),
+  #        min_lcc = ifelse(is.infinite(min_lcc), 0, min_lcc),
+  #        max_lcc = ifelse(is.infinite(max_lcc), 0, max_lcc),
+  #        avg_lcc = replace_na(0),
+  #        std_lcc = replace_na(0)) %>%
+  mutate(network = 'pana')
+
+rf_sw_df <- smallworld_results_time %>%
+  select(-contains('node_'), 
+         # -prob_a,
+         -iteration) %>%
+  rename(n_nodes = time) %>%
+  mutate(network = 'smallworld')
+rf_pa_df <- pref_attach_results_time %>%
+  select(-contains('node_'),
+         # -prob_a,
+         -iteration) %>%
+  rename(n_nodes = time) %>%
+  mutate(network = 'barabasi albert')
+rf_bpa_df <- bpa_results_time %>%
+  select(-contains('node_'),
+         # -prob_a,
+         -iteration) %>%
+  # rename(n_nodes = time) %>%
+  mutate(network = 'bidirectional')
+rf_dd_df <- dd_results_time %>%
+  select(-contains('node_'),
+         # -prob_a,
+         -iteration) %>%
+  rename(n_nodes = time) %>%
+  mutate(network = 'duplication')
+rf_hk_df <- holme_kim_results_time %>%
+  select(-contains('node_'),
+         -iteration) %>%
+  rename(n_nodes = time) %>%
+  mutate(network = 'holme kim')
+# rf_k2_df <- k2_results_time %>%
+#   select(-contains('node_'),
+#          # -prob_a,
+#          -iteration) %>%
+#   rename(n_nodes = time) %>%
+#   mutate(network = 'k2')
+rf_df <- rbindlist(list(
+  rf_pana_df,
+  rf_sw_df,
+  rf_pa_df,
+  rf_bpa_df,
+  # rf_k2_df,
+  rf_hk_df,
+  rf_dd_df
+)) %>%
+  # mutate_all(.funs = function(x) ifelse(is.infinite(x) |is.na(x), 1e9, x)) %>%
+  # mutate(split = rbinom(n = nrow(.), 1, 0.8)) %>%
+  mutate(network = factor(network)) %>%
+  as.data.frame()
+## change to stratified random sampling and V-fold cross validation
+#     at each iteration, a new sample of six networks is chosen
+# shuffle rows
+rf_df <- rf_df[sample(nrow(rf_df)), ]
+rf_df <- rf_df %>%
+  # unique() %>%
+  group_by(network, n_nodes, prob_a) %>%
+  mutate(seq_n = seq(n())) %>%
+  arrange(network, n_nodes, prob_a) %>%
+  mutate(fold =seq_n %% 5) %>%
+  select(-seq_n, -global_cc) %>%
+  ungroup()
+rf_df_cv <- function(rf_df, test_fold) {
+  rf_df_train <- rf_df %>%
+    filter(fold != test_fold) %>%
+    select(-fold,-prob_a)
+  rf_df_test <- rf_df %>%
+    filter(fold == test_fold) %>%
+    select(-fold)
+  print(111)
+  rf_model <- randomForest::randomForest(network ~ ., data = rf_df_train, ntree = 500)
+  rf_df_test$predict <- predict(object = rf_model, newdata = rf_df_test)
+  return(rf_df_test)
+}
+
+rf_df_test <- mclapply(unique(rf_df$fold), function(x) rf_df_cv(rf_df, x), mc.cores = getOption('mc.cores', 5L)) %>%
+  rbindlist()
+table(rf_df_test$network, rf_df_test$predict) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = Var1, values_from = Freq) %>%
+  rename(Truth = Var2) %>%
+  stargazer::stargazer(summary = F)
+
+```
+
+```{r}
+# rf_df_test %>% filter((prob_a == 0 & network == 'pana') | (prob_a == 1 & network == 'barabasi albert')) %>% View()
+# table(rf_df_test$network, rf_df_test$predict) %>%
+#   as.data.frame() %>%
+#   pivot_wider(names_from = Var2, values_from = Freq, id_cols = Var1) %>%
+#   rename(Truth = Var1, BA = `barabasi albert`, PAD = pana, WS = smallworld) %>%
+#   # repla
+#   # mutate(Truth = row.names()) %>%
+#   stargazer::stargazer(
+#     summary = F,
+#     title = 'Random Forest Confusion Matrix',
+#     label = 'table:rf_cm',
+#     rownames = F,
+#     # dep.var.labels = 'Prediction',
+#     # column.labels = c('BA', 'PAD', 'WS'),
+#     type = 'text'
+#   )
+# # bpa_results_time %>% group_by(n_nodes, prob_a) %>% count()
+# rf_df_test %>% 
+#   filter(network != predict) %>%
+#   group_by(prob_a, network) %>%
+#   count()
+# (rf_df_test %>%
+#   filter((network == 'k2' & predict == 'barabasi albert') | (network == 'barabasi albert' & predict == 'k2'))) %>%
+#   ggplot() +
+#   geom_bar(aes(x = n_nodes, fill = network), position = 'dodge2')
+```
+
+```{r}
+rf_model <- randomForest::randomForest(network ~ ., data = rf_df %>% select(-prob_a, -fold), ntree = 500)
+```
+
+```{r real world network meta-data}
+# gather meta data for real world networks
+rw_nets_meta <- read_csv('OLP_networks_desc.csv')
+# identify the proportion of networks from each domain
+# png('./plots/rw_nets_edge_nodes.png', width = 2600, height = 2600, res = 300)
+rw_nets_domain_prop <- rw_nets_meta %>% 
+  group_by(networkDomain) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(n/sum(n))
+ggplot(rw_nets_meta) +
+  geom_point(aes(x = number_nodes, y = number_edges, color = networkDomain)) +
+  geom_abline(slope = 1/2, intercept = 0, linetype = 'dashed') +
+  geom_abline(slope = 4, intercept = 0, linetype = 'dashed') +
+  labs(x = 'Number of Nodes', y = 'Number of Edges', color = 'Domain')  +
+  theme_bw() +
+  theme(plot.title = element_blank(),
+        plot.caption = element_blank(),
+        plot.subtitle = element_blank(),
+        legend.position = 'top',
+        text = element_text(size = 20)
+        ) +
+  guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 3))) +
+  ggsci::scale_color_d3(palette = 'category20c')
+# dev.off()
+
+png('./plots/rw_nets_edge_nodes_facet.png', width = 3600, height = 1800, res = 300)
+ggplot(rw_nets_meta) +
+  # geom_point(aes(x = number_nodes, y = number_edges, color = networkDomain)) +
+  geom_point(aes(x = number_nodes, y = number_edges)) +
+  geom_abline(slope = 1/2, intercept = 0, linetype = 'dashed') +
+  geom_abline(slope = 4, intercept = 0, linetype = 'dashed') +
+  # labs(x = 'Number of Nodes', y = 'Number of Edges', color = 'Domain')  +
+  labs(x = 'Number of Nodes', y = 'Number of Edges') +
+  facet_wrap(~networkDomain, nrow = 2) +
+  theme_bw() +
+  theme(plot.title = element_blank(),
+        plot.caption = element_blank(),
+        plot.subtitle = element_blank(),
+        # legend.position = 'top',
+        text = element_text(size = 30)
+        ) +
+  # guides(color = guide_legend(nrow = 2, override.aes = list(alpha = 1, size = 3))) +
+  ggsci::scale_color_d3(palette = 'category20c')
+dev.off()
+```
+
+```{r real world network data}
+# read in all real networks
+rw_nets_list <- list.files('./olp_networks/')
+
+# function to calculate network statistics for each real network
+rw_net_chars <- function(network_name) {
+  # turn real network into igraph object; remove any self-loops and multiple edges, if they exist
+  example_net <- read_csv(paste0('./olp_networks/', network_name)) %>%
+    igraph::graph_from_data_frame(., directed = FALSE) %>%
+    simplify()
+  # calculate the number of nodes and turn from long to wide
+  network_characteristics(example_net) %>%
+    mutate(n_nodes = nrow(.),
+           network_name = network_name) %>%
+    # select(-btw_distribution) %>%
+    pivot_wider(names_from = node_seq, values_from = degree_distribution) %>%
+    select(-contains('node_')) %>%
+    return()
+}
+
+# calculate network statistics for each model
+rw_net_test_df <- rbindlist(lapply(rw_nets_list, rw_net_chars))
+```
+
+<!--```{r}
+## find diameter of each real world network
+ggplot(rw_net_test_df) +
+  # geom_point(aes(x = n_nodes, y = diameter))
+  geom_bar(aes(x = diameter))
+```-->
+
+
+```{r}
+rw_rf_results <- predict(object = rf_model,
+        newdata = rw_net_test_df,
+        type = 'prob') %>%
+  data.frame() %>%
+  bind_cols(rw_net_test_df) %>% 
+  separate(col = network_name,
+           into = c('network_name'),
+           sep = '.csv') %>%
+  left_join(rw_nets_meta %>% select('network_name', 'title', 'networkDomain'), by = 'network_name') %>%
+  group_by(networkDomain) %>%
+  mutate(networkDomain = paste0(networkDomain, ': ', n(), ' Networks')) %>%
+  mutate(pana_perc = pana) %>%
+  pivot_longer(
+    cols = c('barabasi.albert', 'pana', 'smallworld', 
+             'holme.kim',
+             'bidirectional', 'duplication'), 
+             # 'k2'),
+    names_to = 'network',
+    values_to = 'prob_class'
+  )
+
+png('./plots/rf_classification2.png', width = 3600, height = 900, res = 300)
+ggplot(rw_rf_results) +
+  geom_col(aes(
+    x = reorder(network_name, -pana_perc),
+    y = prob_class,
+    fill = factor(
+      network,
+      levels = c('barabasi.albert', 'bidirectional', 'smallworld', 'duplication', 
+                 'holme.kim',
+                 # 'k2',
+                 'pana')
+    ),
+    width = 1
+  )) +
+  facet_wrap( ~ networkDomain, scales = 'free_x', nrow = 1) +
+  geom_hline(yintercept = 0.5, linetype = 'dashed') +
+  # scale_fill_discrete(labels = c('BA', 'BPA', 'WS', 'PAD')) +
+  theme_classic() +
+  theme(
+    plot.title = element_blank(),
+    plot.caption = element_blank(),
+    plot.subtitle = element_blank(),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 15),
+    legend.position = 'top',
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    strip.background = element_rect(fill = 'white'),
+    strip.text = element_text(size = 10),
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 20)) +
+  labs(fill = 'Generative Algorithm', y = 'Classification Probability', x = 'Real World Network') +
+  scale_x_discrete() +
+  scale_y_continuous(expand = c(0, 0)) + 
+  # ylim(0, 1) +
+  scale_fill_manual(values = c('#1F77B4FF', '#FF7F0EFF', '#2CA02CFF',  '#9467BDFF', '#6BAED6FF', '#D62728FF'),
+                    labels = c('BA', 'BPS', 'WS', 'DD', 'HK',
+                                                           # 'k2',
+                                                           'PAD'))
+  # ggsci::scale_fill_d3(palette = 'category20c', labels = c('BA', 'BPS', 'WS', 'HK', 'DD',
+  # #                                                          # 'k2',
+  #                                                          'PAD'))
+dev.off()
+```
+```{r}
+network_domain_grid <- expand.grid(network = c('barabasi.albert',  'bidirectional', 'smallworld', 'duplication', 'holme.kim', 'pana'),
+            networkDomain = c('Informational: 15 Networks',  'Biological: 102 Networks',
+'Economic: 123 Networks',      'Technological: 67 Networks',
+'Transportation: 33 Networks', 'Social: 116 Networks'))
+png('./plots/rf_classification_simple.png', width = 3600, height = 900, res = 300)
+(rw_rf_results %>%
+  group_by(network_name, networkDomain) %>%
+  mutate(max_class = max(prob_class)) %>%
+  filter(max_class == prob_class) %>%
+  group_by(networkDomain) %>%
+  mutate(n = n()) %>%
+  group_by(networkDomain, network) %>%
+  summarize(prop_net = n()/n) %>%
+  unique() %>%
+  full_join(network_domain_grid) %>%
+  mutate(prop_net = ifelse(is.na(prop_net), 0, prop_net))
+  ) %>%
+  ggplot(.) +
+  geom_col(aes(x = network, y = prop_net, fill = networkDomain), position = 'dodge2') +
+  scale_fill_manual(values = c('#1F77B4FF', '#FF7F0EFF', '#2CA02CFF',  '#9467BDFF', '#6BAED6FF', '#D62728FF'),
+                    breaks = c('Informational: 15 Networks',  'Biological: 102 Networks',
+'Economic: 123 Networks',      'Technological: 67 Networks',
+'Transportation: 33 Networks', 'Social: 116 Networks')) +
+  guides(fill = guide_legend(nrow = 3)) +
+  theme_bw() +
+  theme(
+    plot.title = element_blank(),
+    plot.caption = element_blank(),
+    plot.subtitle = element_blank(),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 15),
+    axis.text.y = element_text(size = 15),
+    legend.position = 'top',
+    # axis.text.x = element_text(size = 20),
+    axis.text.x = element_text(size = 15),
+    strip.background = element_rect(fill = 'white'),
+    strip.text = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 20)) +
+  labs(x = 'Generative Algorithm', y = 'Classification Proportion', fill = 'Network Domain') +
+  scale_x_discrete(breaks = c('barabasi.albert',  'bidirectional', 'smallworld', 'duplication', 'holme.kim', 'pana'),
+                   limits = c('bidirectional', 'duplication', 'holme.kim', 'barabasi.albert', 'smallworld', 'pana'),
+                   labels = c('BA', 'BPS', 'WS', 'DD', 'HK',
+                                                           # 'k2',
+                                                           'PAD')) +
+  scale_y_continuous(expand = c(0, 0))
+dev.off()
+```
+
+
+```{r}
+rw_rf_results %>%
+  group_by(network_name, networkDomain) %>%
+  mutate(max_class = max(prob_class)) %>%
+  filter(max_class == prob_class) %>%
+  group_by(networkDomain) %>%
+  mutate(n = n()) %>%
+  group_by(networkDomain, network) %>%
+  summarize(prop_net = n()/n) %>%
+  unique() %>%
+  group_by(networkDomain) %>%
+  mutate(sum_net  = sum(prop_net)) %>% View()
+```
+```{r}
+# ## degree distributions 
+# dlogis_pan <- pan_graphs_over_time %>%
+#   filter(time == 2000) %>%
+#   select(contains('node_')) %>%
+#   apply(., MARGIN = 1, FUN = function(x) EstimationTools::maxlogL(x = x, dist = 'dlogis', start=c(2, 3),
+#                                            lower=c(-15, 0), upper=c(15, 10)) %>% summary())
+```
+
